@@ -54,20 +54,24 @@ SPECIAL_FORMATTING = {"code", "del", "head", "hi", "ref", "item", "cell"}
 WITH_ATTRIBUTES = {"cell", "row", "del", "graphic", "head", "hi", "item", "list", "ref"}
 NESTING_WHITELIST = {"cell", "figure", "item", "note", "quote"}
 
+# metadata fields shared by the TXT, Markdown, XML and HTML outputs, in document order
 META_ATTRIBUTES = [
-    "sitename",
     "title",
     "author",
-    "date",
     "url",
     "hostname",
     "description",
+    "sitename",
+    "date",
     "categories",
     "tags",
-    "license",
-    "id",
     "fingerprint",
+    "id",
+    "license",
     "language",
+    "image",
+    "pagetype",
+    "filedate",
 ]
 
 HI_FORMATTING = {"#b": "**", "#i": "*", "#t": "`"}
@@ -906,6 +910,14 @@ def xmltocsv(document: Document, include_formatting: bool, *, delim: str = "\t",
                 commentstext,
                 document.license,
                 document.pagetype,
+                # added later, kept at the end so existing columns do not move
+                document.author,
+                document.description,
+                document.sitename,
+                ";".join(document.categories or []),
+                ";".join(document.tags or []),
+                document.language,
+                document.filedate,
             )
         ]
     )
@@ -942,7 +954,6 @@ def _define_publisher_string(docmeta: Document) -> str:
 
 def write_fullheader(teidoc: _Element, docmeta: Document) -> _Element:
     """Write TEI header based on gathered metadata"""
-    # todo: add language info
     header = SubElement(teidoc, "teiHeader")
     filedesc = SubElement(header, "fileDesc")
     bib_titlestmt = SubElement(filedesc, "titleStmt")
@@ -965,6 +976,9 @@ def write_fullheader(teidoc: _Element, docmeta: Document) -> _Element:
     if docmeta.id:
         SubElement(notesstmt, "note", type="id").text = docmeta.id
     SubElement(notesstmt, "note", type="fingerprint").text = docmeta.fingerprint
+    for notetype in ("image", "pagetype"):
+        if value := getattr(docmeta, notetype):
+            SubElement(notesstmt, "note", type=notetype).text = value
 
     sourcedesc = SubElement(filedesc, "sourceDesc")
     source_bibl = SubElement(sourcedesc, "bibl")
@@ -998,6 +1012,10 @@ def write_fullheader(teidoc: _Element, docmeta: Document) -> _Element:
             SubElement(keywords, "term", type="categories").text = category
         for tag in docmeta.tags or []:
             SubElement(keywords, "term", type="tags").text = tag
+
+    if docmeta.language:
+        langusage = SubElement(profiledesc, "langUsage")
+        SubElement(langusage, "language", ident=docmeta.language)
 
     creation = SubElement(profiledesc, "creation")
     SubElement(creation, "date", type="download").text = docmeta.filedate

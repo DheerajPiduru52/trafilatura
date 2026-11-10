@@ -10,6 +10,7 @@ import pkgutil
 import sys
 import time
 from copy import copy, deepcopy
+from datetime import datetime
 from functools import _lru_cache_wrapper, partial
 from os import path
 from unittest.mock import patch
@@ -488,11 +489,81 @@ def test_html_parser_per_call():
     assert tree.xpath("//comment()") == []
 
 
+METADATA_HTML = (
+    '<html><head><title>Test title</title><meta name="author" content="Jane Doe">'
+    '<meta name="description" content="Test description"><meta property="og:site_name" content="Example">'
+    '<meta property="og:image" content="https://example.org/a.jpg"><meta property="og:type" content="article">'
+    '<meta property="article:published_time" content="2024-01-02"><meta property="article:section" content="cat1">'
+    '<meta property="article:tag" content="tag1"></head><body><article><p>'
+    + "This is a sentence in English. "
+    * 10
+    + '</p></article><footer><a rel="license" href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>'
+    "</footer></body></html>"
+)
+
+
+@pytest.mark.parametrize("fmt", ["txt", "markdown", "xml", "html", "csv", "xmltei"])
+def test_metadata_fields_in_all_formats(fmt):
+    "Every output format with metadata carries the same fields (#1123)."
+    expected = {
+        "title": "Test title",
+        "author": "Jane Doe",
+        "url": "https://example.org/page",
+        "hostname": "example.org",
+        "description": "Test description",
+        "sitename": "Example",
+        "date": "2024-01-02",
+        "categories": "cat1",
+        "tags": "tag1",
+        "id": "doc-1",
+        "license": "CC BY-SA 4.0",
+        "language": "en",
+        "image": "https://example.org/a.jpg",
+        "pagetype": "article",
+        "filedate": datetime.now().astimezone().strftime("%Y-%m-%d"),
+    }
+    if not LANGID_FLAG:
+        del expected["language"]
+    result = extract(
+        METADATA_HTML,
+        output_format=fmt,
+        with_metadata=True,
+        url="https://example.org/page",
+        record_id="doc-1",
+        config=ZERO_CONFIG,
+    )
+
+    if fmt in ("txt", "markdown"):
+        header = result.split("---")[1]
+        for field, value in expected.items():
+            assert f"\n{field}: " in header, field
+            assert value in header, field
+    elif fmt == "xml":
+        tree = etree.fromstring(result)
+        assert {field: tree.get(field) for field in expected} == expected
+    elif fmt == "html":
+        tree = html.fromstring(result)
+        assert {field: tree.xpath(f"//meta[@name='{field}']/@content")[0] for field in expected} == expected
+    elif fmt == "csv":
+        # new columns come after the existing ones
+        row = result.rstrip("\r\n").split("\t")
+        language = expected.get("language", "null")
+        assert row[11:] == ["Jane Doe", "Test description", "Example", "cat1", "tag1", language, expected["filedate"]]
+    else:
+        tei = etree.fromstring(result)
+        namespace = {"tei": "http://www.tei-c.org/ns/1.0"}
+        if LANGID_FLAG:
+            assert tei.xpath("//tei:langUsage/tei:language/@ident", namespaces=namespace) == ["en"]
+        assert tei.xpath("//tei:note[@type='image']/text()", namespaces=namespace) == ["https://example.org/a.jpg"]
+        assert tei.xpath("//tei:note[@type='pagetype']/text()", namespaces=namespace) == ["article"]
+        assert xml.validate_tei(tei)
+
+
 def test_xmltocsv():
     doc = Document()
     doc.body = etree.fromstring("<xml/>")
     doc.commentsbody = etree.fromstring("<xml/>")
-    assert xml.xmltocsv(doc, False) == "null\tnull\tnull\tnull\tnull\tnull\tnull\tnull\tnull\tnull\tnull\r\n"
+    assert xml.xmltocsv(doc, False) == "\t".join(["null"] * 18) + "\r\n"
 
     doc.title = "Test title"
     doc.url = "https://example.org"
@@ -506,7 +577,7 @@ def test_xmltocsv():
     doc.body = etree.fromstring(f"<p>{text}</p>")
     doc.commentsbody = etree.fromstring(f"<p>{comments}</p>")
 
-    target = "https://example.org\t1\tnull\texample.org\tTest title\thttps://example.org/image.jpg\tnull\tTest text\tTest comment\tCC BY-SA\tarticle\r\n"
+    target = "https://example.org\t1\tnull\texample.org\tTest title\thttps://example.org/image.jpg\tnull\tTest text\tTest comment\tCC BY-SA\tarticle\tnull\tnull\tnull\tnull\tnull\tnull\tnull\r\n"
 
     assert xml.xmltocsv(doc, False) == target
 
@@ -5043,12 +5114,16 @@ def test_html_conversion():
   <head>
     <meta name="title" content="Title 1"/>
     <meta name="fingerprint" content="f6fd180b8fbe3670"/>{}
+    <meta name="filedate" content="{}"/>
   </head>
   <body>
     <h1>Title 1</h1>
     <p>Text.</p>
   </body>
-</html>""".format('\n    <meta name="language" content="ext"/>' if LANGID_FLAG else "")
+</html>""".format(
+        '\n    <meta name="language" content="ext"/>' if LANGID_FLAG else "",
+        datetime.now().astimezone().strftime("%Y-%m-%d"),
+    )
     result = extract(html, output_format="html", config=ZERO_CONFIG, with_metadata=True)
     assert result == excepted_html
 
